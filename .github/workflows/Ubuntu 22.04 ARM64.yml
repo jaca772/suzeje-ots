@@ -1,81 +1,105 @@
-name: Ubuntu 22.04 ARM64 
+name: Ubuntu 22.04 ARM64
 
 on: [workflow_dispatch]
 
 jobs:
-  linux_build_self_hosted: 
+  linux_build_arm64_self_hosted:
     runs-on: self-hosted
 
     permissions:
       packages: write
-      contents: write
+      contents: write 
 
     steps:
     - name: Set up Git
       uses: actions/checkout@v4
 
-
-    - name: Install Uuid (if needed)
+    - name: Install Prerequisites (if needed)
       run: |
+
         if ! pkg-config --exists uuid; then
-          echo "libuuid is not installed. Installing it..."
+          echo "libuuid-dev is not installed. Installing it..."
           sudo apt-get update
           sudo apt-get install -y uuid-dev
         else
-          echo "libuuid is already installed."
+          echo "libuuid-dev is already installed."
         fi
 
-    - name: Setup Premake
+        if ! dpkg -s build-essential &> /dev/null; then
+          echo "build-essential is not installed. Installing it..."
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+        else
+          echo "build-essential is already installed."
+        fi
+        if ! command -v zip &> /dev/null; then
+          echo "zip is not installed. Installing it..."
+          sudo apt-get update
+          sudo apt-get install -y zip
+        else
+          echo "zip is already installed."
+        fi
+
+        if ! command -v gh &> /dev/null; then
+            echo "GitHub CLI (gh) not found. Installing..."
+            sudo apt-get update
+            sudo apt-get install -y curl
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            sudo apt-get update
+            sudo apt-get install -y gh
+        else
+            echo "GitHub CLI (gh) is already installed."
+        fi
+
+    - name: Setup Premake & Generate Makefiles
       run: |
         if ! command -v premake5 &> /dev/null; then
             echo "Premake5 not found in PATH. Cloning and building..."
             git clone https://github.com/premake/premake-core
             cd premake-core
             make -f Bootstrap.mak linux
-            # Opcjonalnie: skopiuj premake5 do miejsca w PATH, np. /usr/local/bin
-            # sudo cp bin/release/premake5 /usr/local/bin/
             cd ..
+            echo "Generating Makefiles using locally built Premake..."
             ./premake-core/bin/release/premake5 gmake2
         else
-             echo "Premake5 found in PATH. Generating makefiles..."
+             echo "Premake5 found in PATH. Generating Makefiles..."
              premake5 gmake2
         fi
 
 
     - name: Install Vcpkg Libraries
       run: |
-
-        VCPKG_ROOT=${{ github.workspace }}/vcpkg 
+        VCPKG_ROOT=${{ github.workspace }}/vcpkg
         if [ ! -d "$VCPKG_ROOT" ] || [ ! -f "$VCPKG_ROOT/vcpkg" ]; then
            echo "Cloning Vcpkg into $VCPKG_ROOT..."
            git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
-           "$VCPKG_ROOT/bootstrap-vcpkg.sh"
+           "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics # Wyłącz metryki
         else
            echo "Updating Vcpkg in $VCPKG_ROOT..."
-           git -C "$VCPKG_ROOT" reset --hard HEAD
+           git -C "$VCPKG_ROOT" checkout .
            git -C "$VCPKG_ROOT" clean -fd
            git -C "$VCPKG_ROOT" pull
         fi
-        "$VCPKG_ROOT/vcpkg" install
-
-    - name: Compile Release 64
+        "$VCPKG_ROOT/vcpkg" install --triplet arm64-linux
+    - name: Compile Release ARM64
       run: |
-        make -j $(nproc) config=release_64
-        cp Black-Tek-Server BlackTek-Server-Release
-
-    - name: Compile Debug 64
+        make -j $(nproc) config=Release_ARM64
+        cp Black-Tek-Server BlackTek-Server-Release-ARM64
+    - name: Compile Debug ARM64
       run: |
-        make -j $(nproc) config=debug_64
-        cp Black-Tek-Server BlackTek-Server-Debug
+        make -j $(nproc) config=Debug_ARM64
+        cp Black-Tek-Server BlackTek-Server-Debug-ARM64
         rm Black-Tek-Server
 
     - name: Cleanup Vcpkg_installed
       uses: JesseTG/rm@v1.0.3
       with:
-        path: ${{ github.workspace }}/vcpkg_installed 
+        path: ${{ github.workspace }}/vcpkg_installed/arm64-linux
 
-    - name: Cleanup Vcpkg directory 
-      if: always() 
+    - name: Cleanup Vcpkg directory
+      if: always()
       uses: JesseTG/rm@v1.0.3
       with:
         path: ${{ github.workspace }}/vcpkg
@@ -85,49 +109,65 @@ jobs:
       with:
         path: ${{ github.workspace }}/build
 
-    - name: Cleanup Premake-Core e
+    - name: Cleanup Premake-Core
+      if: always()
       uses: JesseTG/rm@v1.0.3
       with:
         path: ${{ github.workspace }}/premake-core
 
+
     - name: Prepare Compressed Assets
       run: |
         echo "Commit SHA: ${{ github.sha }}" > version.info
-        # zip BlackTek-Server-${{ github.sha }}.zip BlackTek-Server-Release BlackTek-Server-Debug version.info
-        zip -r BlackTek-Server-${{ github.sha }}.zip ${{ github.workspace }} # Uwaga: to pakuje *cały* workspace
-        zip -r BlackTek-Server.zip version.info # To archiwum zawiera tylko version.info
 
-    - name: Cleanup Old Release Assets
+        zip BlackTek-Server-ARM64-${{ github.sha }}.zip BlackTek-Server-Release-ARM64 BlackTek-Server-Debug-ARM64 version.info
 
+    - name: Cleanup Old Release Assets (ARM64)
       if: (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
       run: |
-
+        RELEASE_TAG="Linux-Edge-Build-ARM64"
+        echo "Cleaning assets for release tag: $RELEASE_TAG"
         echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
-        ASSETS=$(gh release view Linux-Edge-Build --json assets -q '.assets[].name' | grep "BlackTek-Server-" | sort)
-        KEEP_COUNT=25
-        TOTAL_COUNT=$(echo "$ASSETS" | wc -l)
+
+        if ! gh release view $RELEASE_TAG > /dev/null 2>&1; then
+          echo "Release $RELEASE_TAG does not exist. No assets to clean."
+          exit 0
+        fi
+
+
+        ASSETS=$(gh release view $RELEASE_TAG --json assets -q '.assets[].name' | grep "BlackTek-Server-ARM64-" | sort)
+        KEEP_COUNT=25 
+
+        if [ -z "$ASSETS" ]; then
+           TOTAL_COUNT=0
+        else
+           TOTAL_COUNT=$(echo "$ASSETS" | wc -l)
+        fi
+
         if [ $TOTAL_COUNT -gt $KEEP_COUNT ]; then
           DELETE_COUNT=$((TOTAL_COUNT - KEEP_COUNT))
           ASSETS_TO_DELETE=$(echo "$ASSETS" | head -n $DELETE_COUNT)
-          echo "Found $TOTAL_COUNT assets, keeping $KEEP_COUNT, deleting $DELETE_COUNT"
+          echo "Found $TOTAL_COUNT ARM64 assets for $RELEASE_TAG, keeping $KEEP_COUNT, deleting $DELETE_COUNT"
           for ASSET in $ASSETS_TO_DELETE; do
-            echo "Deleting asset: $ASSET"
-            gh release delete-asset Linux-Edge-Build "$ASSET" --yes
+            echo "Deleting asset: $ASSET from release $RELEASE_TAG"
+            gh release delete-asset $RELEASE_TAG "$ASSET" --yes
           done
         else
-          echo "Only $TOTAL_COUNT assets found, no cleanup needed (keeping up to $KEEP_COUNT)"
+          echo "Only $TOTAL_COUNT ARM64 assets found for $RELEASE_TAG, no cleanup needed (keeping up to $KEEP_COUNT)"
         fi
 
-    - name: Upload Assets for Edge Build
+
+    - name: Upload Assets for Edge Build (ARM64)
       if: (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
       uses: softprops/action-gh-release@v2
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         prerelease: true
-        tag_name: Linux-Edge-Build
-        name: BlackTek Server Edge Build
+        tag_name: Linux-Edge-Build-ARM64
+        name: BlackTek Server Edge Build (ARM64)
         body: |
-          This is an automated Linux Edge build for commit ${{ github.sha }}
-          OS-BuildType: Self-Hosted Linux # Zmieniono z matrix.os
-        files: BlackTek-Server-${{ github.sha }}.zip
+          This is an automated Linux ARM64 Edge build for commit ${{ github.sha }}
+          OS-BuildType: Self-Hosted Ubuntu 22.04 ARM64
+        files: BlackTek-Server-ARM64-${{ github.sha }}.zip
+        make_latest: true
