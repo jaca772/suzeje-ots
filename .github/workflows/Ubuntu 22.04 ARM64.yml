@@ -1,6 +1,6 @@
-name: Ubuntu 22.04 ARM64
+name: Ubuntu 22.04 ARM64 Build
 
-on: [workflow_dispatch]
+on: [workflow_dispatch, push, pull_request]
 
 jobs:
   linux_build_arm64_self_hosted:
@@ -8,15 +8,18 @@ jobs:
 
     permissions:
       packages: write
-      contents: write 
+      contents: write
 
     steps:
     - name: Set up Git
       uses: actions/checkout@v4
 
+    - name: Clean workspace before build
+      run: |
+        git clean -fdx
+
     - name: Install Prerequisites (if needed)
       run: |
-
         if ! pkg-config --exists uuid; then
           echo "libuuid-dev is not installed. Installing it..."
           sudo apt-get update
@@ -24,7 +27,6 @@ jobs:
         else
           echo "libuuid-dev is already installed."
         fi
-
         if ! dpkg -s build-essential &> /dev/null; then
           echo "build-essential is not installed. Installing it..."
           sudo apt-get update
@@ -39,7 +41,6 @@ jobs:
         else
           echo "zip is already installed."
         fi
-
         if ! command -v gh &> /dev/null; then
             echo "GitHub CLI (gh) not found. Installing..."
             sudo apt-get update
@@ -57,7 +58,7 @@ jobs:
       run: |
         if ! command -v premake5 &> /dev/null; then
             echo "Premake5 not found in PATH. Cloning and building..."
-            git clone https://github.com/premake/premake-core
+            git clone --depth 1 https://github.com/premake/premake-core
             cd premake-core
             make -f Bootstrap.mak linux
             cd ..
@@ -68,28 +69,43 @@ jobs:
              premake5 gmake2
         fi
 
+    - name: Check Generated Makefile Targets
+      run: |
+        echo "Checking for expected targets (Release_ARM64, Debug_ARM64) in Makefile..."
+        if [ -f Makefile ]; then
+          grep -E '^(Release_ARM64|Debug_ARM64):' Makefile || echo "WARNING: Expected targets not found directly as target lines in Makefile."
+          echo "--- First 50 lines of Makefile ---"
+          head -n 50 Makefile
+          echo "--- End of Makefile snippet ---"
+        else
+          echo "ERROR: Makefile not found!"
+          exit 1
+        fi
 
     - name: Install Vcpkg Libraries
       run: |
         VCPKG_ROOT=${{ github.workspace }}/vcpkg
         if [ ! -d "$VCPKG_ROOT" ] || [ ! -f "$VCPKG_ROOT/vcpkg" ]; then
            echo "Cloning Vcpkg into $VCPKG_ROOT..."
-           git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
-           "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics # Wyłącz metryki
+           git clone --depth 1 https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
+           "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
         else
            echo "Updating Vcpkg in $VCPKG_ROOT..."
            git -C "$VCPKG_ROOT" checkout .
            git -C "$VCPKG_ROOT" clean -fd
-           git -C "$VCPKG_ROOT" pull
+           git -C "$VCPKG_ROOT" fetch origin master
+           git -C "$VCPKG_ROOT" reset --hard origin/master
         fi
         "$VCPKG_ROOT/vcpkg" install --triplet arm64-linux
+
     - name: Compile Release ARM64
       run: |
-        make -j $(nproc) config=Release_ARM64
+        make -j $(nproc) Release_ARM64
         cp Black-Tek-Server BlackTek-Server-Release-ARM64
+
     - name: Compile Debug ARM64
       run: |
-        make -j $(nproc) config=Debug_ARM64
+        make -j $(nproc) Debug_ARM64
         cp Black-Tek-Server BlackTek-Server-Debug-ARM64
         rm Black-Tek-Server
 
@@ -115,11 +131,9 @@ jobs:
       with:
         path: ${{ github.workspace }}/premake-core
 
-
     - name: Prepare Compressed Assets
       run: |
         echo "Commit SHA: ${{ github.sha }}" > version.info
-
         zip BlackTek-Server-ARM64-${{ github.sha }}.zip BlackTek-Server-Release-ARM64 BlackTek-Server-Debug-ARM64 version.info
 
     - name: Cleanup Old Release Assets (ARM64)
@@ -128,22 +142,13 @@ jobs:
         RELEASE_TAG="Linux-Edge-Build-ARM64"
         echo "Cleaning assets for release tag: $RELEASE_TAG"
         echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
-
         if ! gh release view $RELEASE_TAG > /dev/null 2>&1; then
           echo "Release $RELEASE_TAG does not exist. No assets to clean."
           exit 0
         fi
-
-
         ASSETS=$(gh release view $RELEASE_TAG --json assets -q '.assets[].name' | grep "BlackTek-Server-ARM64-" | sort)
-        KEEP_COUNT=25 
-
-        if [ -z "$ASSETS" ]; then
-           TOTAL_COUNT=0
-        else
-           TOTAL_COUNT=$(echo "$ASSETS" | wc -l)
-        fi
-
+        KEEP_COUNT=25
+        if [ -z "$ASSETS" ]; then TOTAL_COUNT=0; else TOTAL_COUNT=$(echo "$ASSETS" | wc -l); fi
         if [ $TOTAL_COUNT -gt $KEEP_COUNT ]; then
           DELETE_COUNT=$((TOTAL_COUNT - KEEP_COUNT))
           ASSETS_TO_DELETE=$(echo "$ASSETS" | head -n $DELETE_COUNT)
@@ -155,7 +160,6 @@ jobs:
         else
           echo "Only $TOTAL_COUNT ARM64 assets found for $RELEASE_TAG, no cleanup needed (keeping up to $KEEP_COUNT)"
         fi
-
 
     - name: Upload Assets for Edge Build (ARM64)
       if: (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
