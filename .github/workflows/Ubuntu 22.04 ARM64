@@ -1,0 +1,133 @@
+name: Ubuntu 22.04 ARM64 
+
+on: [workflow_dispatch, pull_request, push]
+
+jobs:
+  linux_build_self_hosted: 
+    runs-on: self-hosted
+
+    permissions:
+      packages: write
+      contents: write
+
+    steps:
+    - name: Set up Git
+      uses: actions/checkout@v4
+
+
+    - name: Install Uuid (if needed)
+      run: |
+        if ! pkg-config --exists uuid; then
+          echo "libuuid is not installed. Installing it..."
+          sudo apt-get update
+          sudo apt-get install -y uuid-dev
+        else
+          echo "libuuid is already installed."
+        fi
+
+    - name: Setup Premake
+      run: |
+        if ! command -v premake5 &> /dev/null; then
+            echo "Premake5 not found in PATH. Cloning and building..."
+            git clone https://github.com/premake/premake-core
+            cd premake-core
+            make -f Bootstrap.mak linux
+            # Opcjonalnie: skopiuj premake5 do miejsca w PATH, np. /usr/local/bin
+            # sudo cp bin/release/premake5 /usr/local/bin/
+            cd ..
+            ./premake-core/bin/release/premake5 gmake2
+        else
+             echo "Premake5 found in PATH. Generating makefiles..."
+             premake5 gmake2
+        fi
+
+
+    - name: Install Vcpkg Libraries
+      run: |
+
+        VCPKG_ROOT=${{ github.workspace }}/vcpkg 
+        if [ ! -d "$VCPKG_ROOT" ] || [ ! -f "$VCPKG_ROOT/vcpkg" ]; then
+           echo "Cloning Vcpkg into $VCPKG_ROOT..."
+           git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
+           "$VCPKG_ROOT/bootstrap-vcpkg.sh"
+        else
+           echo "Updating Vcpkg in $VCPKG_ROOT..."
+           git -C "$VCPKG_ROOT" reset --hard HEAD
+           git -C "$VCPKG_ROOT" clean -fd
+           git -C "$VCPKG_ROOT" pull
+        fi
+        "$VCPKG_ROOT/vcpkg" install
+
+    - name: Compile Release 64
+      run: |
+        make -j $(nproc) config=release_64
+        cp Black-Tek-Server BlackTek-Server-Release
+
+    - name: Compile Debug 64
+      run: |
+        make -j $(nproc) config=debug_64
+        cp Black-Tek-Server BlackTek-Server-Debug
+        rm Black-Tek-Server
+
+    - name: Cleanup Vcpkg_installed
+      uses: JesseTG/rm@v1.0.3
+      with:
+        path: ${{ github.workspace }}/vcpkg_installed 
+
+    - name: Cleanup Vcpkg directory 
+      if: always() 
+      uses: JesseTG/rm@v1.0.3
+      with:
+        path: ${{ github.workspace }}/vcpkg
+
+    - name: Cleanup Intermediaries
+      uses: JesseTG/rm@v1.0.3
+      with:
+        path: ${{ github.workspace }}/build
+
+    - name: Cleanup Premake-Core e
+      uses: JesseTG/rm@v1.0.3
+      with:
+        path: ${{ github.workspace }}/premake-core
+
+    - name: Prepare Compressed Assets
+      run: |
+        echo "Commit SHA: ${{ github.sha }}" > version.info
+        # zip BlackTek-Server-${{ github.sha }}.zip BlackTek-Server-Release BlackTek-Server-Debug version.info
+        zip -r BlackTek-Server-${{ github.sha }}.zip ${{ github.workspace }} # Uwaga: to pakuje *cały* workspace
+        zip -r BlackTek-Server.zip version.info # To archiwum zawiera tylko version.info
+
+    - name: Cleanup Old Release Assets
+
+      if: (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+      run: |
+
+        echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+        ASSETS=$(gh release view Linux-Edge-Build --json assets -q '.assets[].name' | grep "BlackTek-Server-" | sort)
+        KEEP_COUNT=25
+        TOTAL_COUNT=$(echo "$ASSETS" | wc -l)
+        if [ $TOTAL_COUNT -gt $KEEP_COUNT ]; then
+          DELETE_COUNT=$((TOTAL_COUNT - KEEP_COUNT))
+          ASSETS_TO_DELETE=$(echo "$ASSETS" | head -n $DELETE_COUNT)
+          echo "Found $TOTAL_COUNT assets, keeping $KEEP_COUNT, deleting $DELETE_COUNT"
+          for ASSET in $ASSETS_TO_DELETE; do
+            echo "Deleting asset: $ASSET"
+            gh release delete-asset Linux-Edge-Build "$ASSET" --yes
+          done
+        else
+          echo "Only $TOTAL_COUNT assets found, no cleanup needed (keeping up to $KEEP_COUNT)"
+        fi
+
+    - name: Upload Assets for Edge Build
+      if: (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+      uses: softprops/action-gh-release@v2
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        prerelease: true
+        tag_name: Linux-Edge-Build
+        name: BlackTek Server Edge Build
+        body: |
+          This is an automated Linux Edge build for commit ${{ github.sha }}
+          OS-BuildType: Self-Hosted Linux # Zmieniono z matrix.os
+        files: BlackTek-Server-${{ github.sha }}.zip
