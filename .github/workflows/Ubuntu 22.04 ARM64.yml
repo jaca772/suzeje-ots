@@ -56,19 +56,19 @@ jobs:
 
     - name: Setup Premake & Generate Makefiles
       run: |
-        PREMAKE_EXE="premake5" # Domyślnie użyj wersji z PATH
+        PREMAKE_EXE="premake5"
         if ! command -v premake5 &> /dev/null; then
             echo "Premake5 not found in PATH. Cloning and building..."
             git clone --depth 1 https://github.com/premake/premake-core
             cd premake-core
             make -f Bootstrap.mak linux
             cd ..
-            PREMAKE_EXE="./premake-core/bin/release/premake5" # Użyj lokalnie zbudowanej
+            PREMAKE_EXE="./premake-core/bin/release/premake5"
             echo "Generating Makefiles using locally built Premake ($PREMAKE_EXE)..."
         else
              echo "Premake5 found in PATH. Generating Makefiles..."
         fi
-        "$PREMAKE_EXE" gmake2 # Wywołaj generowanie
+        "$PREMAKE_EXE" gmake2
 
     - name: Check Generated Makefile Content (for Debugging)
       run: |
@@ -77,13 +77,13 @@ jobs:
           echo "--- First 50 lines of Makefile ---"
           head -n 50 Makefile
           echo "--- Makefile targets containing project name (Black-Tek-Server) ---"
-          grep -i 'Black-Tek-Server' Makefile || echo "No targets referencing Black-Tek-Server found."
+          # Sprawdźmy, czy config jest używany
+          grep 'config=' Makefile || echo "No 'config=' variable found in Makefile."
           echo "--- End of Makefile check ---"
         else
           echo "ERROR: Makefile not found!"
           exit 1
         fi
-        # Sprawdź również, czy istnieje plik .make dla projektu
         if [ -f Black-Tek-Server.make ]; then
           echo "Project makefile (Black-Tek-Server.make) exists."
         else
@@ -107,17 +107,20 @@ jobs:
         fi
         "$VCPKG_ROOT/vcpkg" install --triplet arm64-linux
 
-    # --- ZMIENIONE WYWOŁANIE MAKE ---
+    # --- PONOWNIE ZMIENIONE WYWOŁANIE MAKE ---
     - name: Compile Release ARM64
       run: |
-        # Użyj 'config=' ORAZ nazwy projektu jako celu
-        make -j $(nproc) config=Release_ARM64 Black-Tek-Server
+        # Użyj TYLKO nazwy konfiguracji (Release/Debug) w 'config='
+        # Platforma ARM64 jest implikowana przez środowisko, w którym uruchomiono premake5 gmake2
+        make -j $(nproc) config=Release Black-Tek-Server
+        # Nazwa pliku wynikowego nadal odzwierciedla architekturę
         cp Black-Tek-Server BlackTek-Server-Release-ARM64
 
     - name: Compile Debug ARM64
       run: |
-        # Użyj 'config=' ORAZ nazwy projektu jako celu
-        make -j $(nproc) config=Debug_ARM64 Black-Tek-Server
+        # Użyj TYLKO nazwy konfiguracji (Release/Debug) w 'config='
+        make -j $(nproc) config=Debug Black-Tek-Server
+        # Nazwa pliku wynikowego nadal odzwierciedla architekturę
         cp Black-Tek-Server BlackTek-Server-Debug-ARM64
         rm Black-Tek-Server
 
