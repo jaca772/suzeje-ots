@@ -22,33 +22,33 @@ jobs:
       run: |
         if ! pkg-config --exists uuid; then
           echo "libuuid-dev is not installed. Installing it..."
-          sudo apt-get update
+          sudo apt-get update -y
           sudo apt-get install -y uuid-dev
         else
           echo "libuuid-dev is already installed."
         fi
         if ! dpkg -s build-essential &> /dev/null; then
           echo "build-essential is not installed. Installing it..."
-          sudo apt-get update
+          sudo apt-get update -y
           sudo apt-get install -y build-essential
         else
           echo "build-essential is already installed."
         fi
         if ! command -v zip &> /dev/null; then
           echo "zip is not installed. Installing it..."
-          sudo apt-get update
+          sudo apt-get update -y
           sudo apt-get install -y zip
         else
           echo "zip is already installed."
         fi
         if ! command -v gh &> /dev/null; then
             echo "GitHub CLI (gh) not found. Installing..."
-            sudo apt-get update
+            sudo apt-get update -y
             sudo apt-get install -y curl
             curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
             sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
             echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-            sudo apt-get update
+            sudo apt-get update -y
             sudo apt-get install -y gh
         else
             echo "GitHub CLI (gh) is already installed."
@@ -56,31 +56,40 @@ jobs:
 
     - name: Setup Premake & Generate Makefiles
       run: |
+        PREMAKE_EXE="premake5" # Domyślnie użyj wersji z PATH
         if ! command -v premake5 &> /dev/null; then
             echo "Premake5 not found in PATH. Cloning and building..."
             git clone --depth 1 https://github.com/premake/premake-core
             cd premake-core
             make -f Bootstrap.mak linux
             cd ..
-            echo "Generating Makefiles using locally built Premake..."
-            ./premake-core/bin/release/premake5 gmake2
+            PREMAKE_EXE="./premake-core/bin/release/premake5" # Użyj lokalnie zbudowanej
+            echo "Generating Makefiles using locally built Premake ($PREMAKE_EXE)..."
         else
              echo "Premake5 found in PATH. Generating Makefiles..."
-             premake5 gmake2
         fi
+        "$PREMAKE_EXE" gmake2 # Wywołaj generowanie
 
-    - name: Check Generated Makefile Targets
+    - name: Check Generated Makefile Content (for Debugging)
       run: |
-        echo "Checking for expected targets (Release_ARM64, Debug_ARM64) in Makefile..."
+        echo "Checking generated Makefile..."
         if [ -f Makefile ]; then
-          grep -E '^(Release_ARM64|Debug_ARM64):' Makefile || echo "WARNING: Expected targets not found directly as target lines in Makefile."
           echo "--- First 50 lines of Makefile ---"
           head -n 50 Makefile
-          echo "--- End of Makefile snippet ---"
+          echo "--- Makefile targets containing project name (Black-Tek-Server) ---"
+          grep -i 'Black-Tek-Server' Makefile || echo "No targets referencing Black-Tek-Server found."
+          echo "--- End of Makefile check ---"
         else
           echo "ERROR: Makefile not found!"
           exit 1
         fi
+        # Sprawdź również, czy istnieje plik .make dla projektu
+        if [ -f Black-Tek-Server.make ]; then
+          echo "Project makefile (Black-Tek-Server.make) exists."
+        else
+          echo "WARNING: Project makefile (Black-Tek-Server.make) not found!"
+        fi
+
 
     - name: Install Vcpkg Libraries
       run: |
@@ -98,14 +107,17 @@ jobs:
         fi
         "$VCPKG_ROOT/vcpkg" install --triplet arm64-linux
 
+    # --- ZMIENIONE WYWOŁANIE MAKE ---
     - name: Compile Release ARM64
       run: |
-        make -j $(nproc) Release_ARM64
+        # Użyj 'config=' ORAZ nazwy projektu jako celu
+        make -j $(nproc) config=Release_ARM64 Black-Tek-Server
         cp Black-Tek-Server BlackTek-Server-Release-ARM64
 
     - name: Compile Debug ARM64
       run: |
-        make -j $(nproc) Debug_ARM64
+        # Użyj 'config=' ORAZ nazwy projektu jako celu
+        make -j $(nproc) config=Debug_ARM64 Black-Tek-Server
         cp Black-Tek-Server BlackTek-Server-Debug-ARM64
         rm Black-Tek-Server
 
